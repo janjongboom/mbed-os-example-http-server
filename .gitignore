@@ -1,0 +1,4 @@
+.mbed
+BUILD/
+mbed_settings.*
+
