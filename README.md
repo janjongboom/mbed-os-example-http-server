@@ -15,5 +15,6 @@ Request parsing is done through [nodejs/http-parser](https://github.com/nodejs/h
 
 * K64F with Ethernet.
 * NUCLEO_F411RE with ESP8266.
+    * For ESP8266, you need [this patch](https://github.com/ARMmbed/esp8266-driver/pull/41).
 
 But every networking stack that supports the [mbed OS 5 NetworkInterface API](https://docs.mbed.com/docs/mbed-os-api-reference/en/latest/APIs/communication/network_sockets/) should work.
