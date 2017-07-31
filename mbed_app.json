@@ -1,11 +1,11 @@
 {
     "config": {
         "network-interface": {
-            "help": "options are ETHERNET,WIFI_ESP8266,MESH_LOWPAN_ND,MESH_THREAD",
+            "help": "options are ETHERNET, WIFI_ESP8266, WIFI_ODIN, WIFI_RTW, MESH_LOWPAN_ND, MESH_THREAD",
             "value": "WIFI_ESP8266"
         },
         "mesh_radio_type": {
-        	"help": "options are ATMEL, MCR20",
+        	"help": "options are ATMEL, MCR20, SPIRIT1, EFR32",
         	"value": "ATMEL"
         },
         "esp8266-tx": {
