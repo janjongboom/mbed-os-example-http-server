@@ -169,7 +169,11 @@ public:
         size_t res_size;
         char* response = build(body, body_size, &res_size);
 
-        return socket->send(response, res_size);
+        nsapi_error_t r = socket->send(response, res_size);
+
+        free(response);
+
+        return r;
     }
 
 private:

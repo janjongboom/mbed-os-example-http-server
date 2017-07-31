@@ -1,4 +1,9 @@
 .mbed
 BUILD/
 mbed_settings.*
+.hgignore
+.hg/
+mbed_config.h
+Makefile
+mbed-memory-status.lib
 

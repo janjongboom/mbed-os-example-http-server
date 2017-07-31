@@ -23,7 +23,9 @@
 #include "http_response.h"
 #include "http_response_builder.h"
 
+#ifndef HTTP_SERVER_MAX_CONCURRENT
 #define HTTP_SERVER_MAX_CONCURRENT      5
+#endif
 
 typedef HttpResponse ParsedHttpRequest;
 
@@ -37,8 +39,8 @@ public:
      *
      * @param[in] network The network interface
     */
-    HttpServer(NetworkInterface* network) : server(network) {
-
+    HttpServer(NetworkInterface* network) {
+        _network = network;
     }
 
     ~HttpServer() {
@@ -50,25 +52,24 @@ public:
     }
 
     /**
-     * Start listening
-     *
-     * @param[in] port The port to listen on
-     */
-    nsapi_error_t bind(uint16_t port) {
-        server.listen(HTTP_SERVER_MAX_CONCURRENT); // max. concurrent connections...
-        return server.bind(port);
-    }
-
-    /**
      * Start running the server (it will run on it's own thread)
      */
     nsapi_error_t start(uint16_t port, Callback<void(ParsedHttpRequest* request, TCPSocket* socket)> a_handler) {
-        server.listen(HTTP_SERVER_MAX_CONCURRENT); // max. concurrent connections...
+        server = new TCPServer();
 
-        nsapi_error_t ret = server.bind(port);
+        nsapi_error_t ret;
+
+        ret = server->open(_network);
         if (ret != NSAPI_ERROR_OK) {
             return ret;
         }
+
+        ret = server->bind(port);
+        if (ret != NSAPI_ERROR_OK) {
+            return ret;
+        }
+
+        server->listen(HTTP_SERVER_MAX_CONCURRENT); // max. concurrent connections...
 
         handler = a_handler;
 
@@ -108,8 +109,10 @@ private:
                 }
             }
             // error?
-            if (recv_ret < 0) {
-                printf("Error reading from socket %d\n", recv_ret);
+            if (recv_ret <= 0) {
+                if (recv_ret < 0) {
+                    printf("Error reading from socket %d\n", recv_ret);
+                }
 
                 // error = recv_ret;
                 delete response;
@@ -118,7 +121,7 @@ private:
 
                 // q; should we always break out of the thread or only if NO_SOCKET ?
                 // should we delete socket here? the socket seems already gone...
-                if (recv_ret < -3000) {
+                if (recv_ret < -3000 || recv_ret == 0) {
                     return;
                 }
                 else {
@@ -133,7 +136,9 @@ private:
             free(recv_buffer);
 
             // Let user application handle the request, if user needs a handle to response they need to memcpy themselves
-            handler(response, socket);
+            if (recv_ret > 0) {
+                handler(response, socket);
+            }
 
             // Free the response and parser
             delete response;
@@ -146,7 +151,7 @@ private:
             TCPSocket* clt_sock = new TCPSocket(); // Q: when should these be cleared? When not connected anymore?
             SocketAddress clt_addr;
 
-            nsapi_error_t accept_res = server.accept(clt_sock, &clt_addr);
+            nsapi_error_t accept_res = server->accept(clt_sock, &clt_addr);
             if (accept_res == NSAPI_ERROR_OK) {
                 sockets.push_back(clt_sock); // so we can clear our disconnected sockets
 
@@ -154,12 +159,20 @@ private:
                 Thread* t = new Thread(osPriorityNormal, 2048);
                 t->start(callback(this, &HttpServer::receive_data));
 
-                socket_threads.push_back(t);
+                socket_thread_metadata_t* m = new socket_thread_metadata_t();
+                m->socket = clt_sock;
+                m->thread = t;
+                socket_threads.push_back(m);
+            }
+            else {
+                delete clt_sock;
             }
 
             for (size_t ix = 0; ix < socket_threads.size(); ix++) {
-                if (socket_threads[ix]->get_state() == Thread::Deleted) {
-                    delete socket_threads[ix];
+                if (socket_threads[ix]->thread->get_state() == Thread::Deleted) {
+                    socket_threads[ix]->thread->terminate();
+                    delete socket_threads[ix]->thread;
+                    delete socket_threads[ix]->socket; // does this work on esp8266?
                     socket_threads.erase(socket_threads.begin() + ix); // what if there are two?
                 }
             }
@@ -167,11 +180,17 @@ private:
         }
     }
 
-    TCPServer server;
+    typedef struct {
+        TCPSocket* socket;
+        Thread*    thread;
+    } socket_thread_metadata_t;
+
+    TCPServer* server;
+    NetworkInterface* _network;
     Thread main_thread;
     vector<TCPSocket*> sockets;
-    vector<Thread*> socket_threads;
-    Callback<void(ParsedHttpRequest* request, TCPSocket* socket)> handler = 0;
+    vector<socket_thread_metadata_t*> socket_threads;
+    Callback<void(ParsedHttpRequest* request, TCPSocket* socket)> handler;
 };
 
 #endif // _HTTP_SERVER
