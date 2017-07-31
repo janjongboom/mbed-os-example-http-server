@@ -21,10 +21,11 @@
 #include "mbed.h"
 #include "http_request_parser.h"
 #include "http_response.h"
+#include "http_response_builder.h"
 
 #define HTTP_SERVER_MAX_CONCURRENT      5
 
-TCPSocket* temp; // cant figure this stuff out
+typedef HttpResponse ParsedHttpRequest;
 
 /**
  * \brief HttpServer implements the logic for setting up an HTTP server.
@@ -61,8 +62,8 @@ public:
     /**
      * Start running the server (it will run on it's own thread)
      */
-    nsapi_error_t start(uint16_t port, Callback<void(HttpResponse* request, TCPSocket* socket)> a_handler) {
-        server.listen(5); // max. concurrent connections...
+    nsapi_error_t start(uint16_t port, Callback<void(ParsedHttpRequest* request, TCPSocket* socket)> a_handler) {
+        server.listen(HTTP_SERVER_MAX_CONCURRENT); // max. concurrent connections...
 
         nsapi_error_t ret = server.bind(port);
         if (ret != NSAPI_ERROR_OK) {
@@ -82,52 +83,67 @@ private:
         // UNSAFE: should Mutex around it or something
         TCPSocket* socket = sockets.back();
 
-        HttpResponse response;
-        HttpParser parser(&response, HTTP_REQUEST);
+        // needs to keep running until the socket gets closed
+        while (1) {
 
-        // Set up a receive buffer (on the heap)
-        uint8_t* recv_buffer = (uint8_t*)malloc(HTTP_RECEIVE_BUFFER_SIZE);
+            ParsedHttpRequest* response = new ParsedHttpRequest();
+            HttpParser* parser = new HttpParser(response, HTTP_REQUEST);
 
-        // TCPSocket::recv is called until we don't have any data anymore
-        nsapi_size_or_error_t recv_ret;
-        while ((recv_ret = socket->recv(recv_buffer, HTTP_RECEIVE_BUFFER_SIZE)) > 0) {
+            // Set up a receive buffer (on the heap)
+            uint8_t* recv_buffer = (uint8_t*)malloc(HTTP_RECEIVE_BUFFER_SIZE);
 
-            // Pass the chunk into the http_parser
-            size_t nparsed = parser.execute((const char*)recv_buffer, recv_ret);
-            if (nparsed != recv_ret) {
-                printf("Parsing failed... parsed %d bytes, received %d bytes\n", nparsed, recv_ret);
-                // error = -2101;
+            // TCPSocket::recv is called until we don't have any data anymore
+            nsapi_size_or_error_t recv_ret;
+            while ((recv_ret = socket->recv(recv_buffer, HTTP_RECEIVE_BUFFER_SIZE)) > 0) {
+                // Pass the chunk into the http_parser
+                size_t nparsed = parser->execute((const char*)recv_buffer, recv_ret);
+                if (nparsed != recv_ret) {
+                    printf("Parsing failed... parsed %d bytes, received %d bytes\n", nparsed, recv_ret);
+                    recv_ret = -2101;
+                    break;
+                }
+
+                if (response->is_message_complete()) {
+                    break;
+                }
+            }
+            // error?
+            if (recv_ret < 0) {
+                printf("Error reading from socket %d\n", recv_ret);
+
+                // error = recv_ret;
+                delete response;
+                delete parser;
                 free(recv_buffer);
-                return;
+
+                // q; should we always break out of the thread or only if NO_SOCKET ?
+                // should we delete socket here? the socket seems already gone...
+                if (recv_ret < -3000) {
+                    return;
+                }
+                else {
+                    continue;
+                }
             }
 
-            if (response.is_message_complete()) {
-                break;
-            }
-        }
-        // error?
-        if (recv_ret < 0) {
-            printf("Could not read from socket... %d\n", recv_ret);
-            // error = recv_ret;
+            // When done, call parser.finish()
+            parser->finish();
+
+            // Free the receive buffer
             free(recv_buffer);
-            return;
+
+            // Let user application handle the request, if user needs a handle to response they need to memcpy themselves
+            handler(response, socket);
+
+            // Free the response and parser
+            delete response;
+            delete parser;
         }
-
-        // When done, call parser.finish()
-        parser.finish();
-
-        // Free the receive buffer
-        free(recv_buffer);
-
-        handler(&response, socket);
     }
 
     void main() {
-        wait_ms(1000);
-
         while (1) {
             TCPSocket* clt_sock = new TCPSocket(); // Q: when should these be cleared? When not connected anymore?
-            printf("I has made socket %p\n", clt_sock);
             SocketAddress clt_addr;
 
             nsapi_error_t accept_res = server.accept(clt_sock, &clt_addr);
@@ -135,7 +151,7 @@ private:
                 sockets.push_back(clt_sock); // so we can clear our disconnected sockets
 
                 // and start listening for events there
-                Thread* t = new Thread(osPriorityNormal, 1024);
+                Thread* t = new Thread(osPriorityNormal, 2048);
                 t->start(callback(this, &HttpServer::receive_data));
 
                 socket_threads.push_back(t);
@@ -155,7 +171,7 @@ private:
     Thread main_thread;
     vector<TCPSocket*> sockets;
     vector<Thread*> socket_threads;
-    Callback<void(HttpResponse* request, TCPSocket* socket)> handler = 0;
+    Callback<void(ParsedHttpRequest* request, TCPSocket* socket)> handler = 0;
 };
 
 #endif // _HTTP_SERVER
